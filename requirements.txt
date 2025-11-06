@@ -2,7 +2,7 @@
 streamlit
 
 # Image Processing
-opencv-python-headless
+opencv-python-headless==4.5.5.64
 numpy
 Pillow
 pillow-avif-plugin
@@ -13,7 +13,6 @@ easyocr
 # Environment and Logging
 python-dotenv
 requests
-# 'logging' is a built-in Python module — remove it, no need to install
 
 # Deep Learning Models
 torch
