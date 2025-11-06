@@ -1,0 +1,30 @@
+# Core Framework
+streamlit
+
+# Image Processing
+opencv-python
+numpy
+Pillow
+pillow-avif-plugin
+
+# OCR Engine
+easyocr
+
+# Environment and Logging
+python-dotenv
+requests
+logging
+
+# Deep Learning Models
+torch
+transformers
+sentencepiece
+protobuf
+safetensors
+
+# Translation Support
+googletrans
+
+# Utilities
+tqdm
+regex
