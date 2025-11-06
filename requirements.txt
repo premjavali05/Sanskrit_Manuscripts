@@ -2,7 +2,7 @@
 streamlit
 
 # Image Processing
-opencv-python
+opencv-python-headless
 numpy
 Pillow
 pillow-avif-plugin
@@ -27,4 +27,5 @@ googletrans
 
 # Utilities
 tqdm
+
 regex
