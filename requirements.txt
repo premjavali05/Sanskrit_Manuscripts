@@ -1,24 +1,24 @@
 # Core Framework
-streamlit
+streamlit==1.39.0
 
 # Image Processing
-opencv-python-headless==4.5.5.64
-numpy
+numpy==2.1.1
+opencv-python-headless==4.10.0.84
 Pillow
 pillow-avif-plugin
 
 # OCR Engine
-easyocr
+easyocr==1.7.2
 
 # Environment and Logging
 python-dotenv
 requests
 
 # Deep Learning Models
-torch
-torchvision
-torchaudio
-transformers
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+transformers==4.45.2
 sentencepiece
 protobuf
 safetensors
