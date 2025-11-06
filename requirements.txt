@@ -13,19 +13,20 @@ easyocr
 # Environment and Logging
 python-dotenv
 requests
-logging
+# 'logging' is a built-in Python module — remove it, no need to install
 
 # Deep Learning Models
 torch
+torchvision
+torchaudio
 transformers
 sentencepiece
 protobuf
 safetensors
 
 # Translation Support
-googletrans
+googletrans==4.0.0-rc1
 
 # Utilities
 tqdm
-
 regex
