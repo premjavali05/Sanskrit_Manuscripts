@@ -45,7 +45,7 @@ def load_translation_models():
     try:
         if use_light_models:
             # Lighter Indic-Indic (distilled ~615M; supports san_Deva -> Indic)
-            model_name_indic = "ai4bharat/indictrans2-indic-indic-dist-615M"
+            model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
             tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
             model_indic = AutoModelForSeq2SeqLM.from_pretrained(
                 model_name_indic,
@@ -290,3 +290,4 @@ if uploaded_file:
         st.warning("⚠️ No text detected. Try uploading a clearer image.")
 else:
     st.info("👆 Upload an image to start!")
+
