@@ -134,7 +134,7 @@ def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer
     with torch.no_grad():
         generated_en = model_en.generate(
             **inputs_en,
-            max_length=512,  # Shorter for English
+            max_length=2048,  # Shorter for English
             num_beams=5,
             num_return_sequences=1,
             use_cache=False
@@ -181,12 +181,13 @@ if uploaded_file:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.image(pil_img, caption="📷 Original Image", use_container_width=True)
+        st.image(pil_img, caption="📷 Original Image", width="stretch")
     with col2:
-        st.image(Image.fromarray(final_text_only), caption="🧾 Processed Text-Only Image", use_container_width=True)
+        st.image(Image.fromarray(final_text_only), caption="🧾 Processed Text-Only Image", width="stretch")
 
     st.subheader("🔍 Extracted OCR Text")
-    reader = easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
+    with st.spinner("Initializing EasyOCR (downloads models on first run; may take 2-5 min on CPU)..."):
+        reader = easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
     results = reader.readtext(image, detail=1, paragraph=True)
     extracted_text = " ".join([res[1] for res in results])
 
