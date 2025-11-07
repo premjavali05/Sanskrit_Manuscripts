@@ -10,6 +10,7 @@ import os
 import logging
 import re
 import torch
+import time  # For retry backoff
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 # -------------------- ENV + LOGGING --------------------
@@ -77,30 +78,41 @@ def preprocess_ocr_text(text: str) -> str:
     """Keep only Devanagari letters, spaces, and Sanskrit punctuation."""
     return re.sub(r"[^\u0900-\u097F\s।॥]", "", text)
 
-def call_mistral_cleaner(noisy_text: str) -> str:
-    """Send OCR text to your custom Mistral AI Agent for Sanskrit cleaning."""
-    try:
-        headers = {
-            "Authorization": f"Bearer {MISTRAL_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "agent_id": MISTRAL_AGENT_ID,  # Use your agent's ID here
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"Clean this noisy OCR Sanskrit text: {noisy_text}\n\nOutput only the cleaned Devanagari text."  # Simplified—agent has full instructions baked in
-                }
-            ]
-        }
-        response = requests.post(MISTRAL_URL, headers=headers, json=payload, proxies={"http": "", "https": ""})
-        response.raise_for_status()
-        result = response.json()
-        cleaned_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return cleaned_text.strip() if cleaned_text else "Error: No output from Agent."
-    except Exception as e:
-        logger.error("Error calling Mistral Agent: %s", e)
-        return f"Error: {str(e)}"
+def call_mistral_cleaner(noisy_text: str, max_retries=3) -> str:
+    """Send OCR text to your custom Mistral AI Agent for Sanskrit cleaning with retry on rate limits."""
+    for attempt in range(max_retries):
+        try:
+            headers = {
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "agent_id": MISTRAL_AGENT_ID,  # Use your agent's ID here
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"Clean this noisy OCR Sanskrit text: {noisy_text}\n\nOutput only the cleaned Devanagari text."  # Simplified—agent has full instructions baked in
+                    }
+                ]
+            }
+            response = requests.post(MISTRAL_URL, headers=headers, json=payload, proxies={"http": "", "https": ""})
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))  # Use header or default 60s
+                st.warning(f"⏳ Rate limit hit. Retrying in {retry_after}s... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_after)
+                continue
+            response.raise_for_status()
+            result = response.json()
+            cleaned_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return cleaned_text.strip() if cleaned_text else "Error: No output from Agent."
+        except requests.exceptions.HTTPError as e:
+            if e.response and e.response.status_code == 429:
+                continue  # Retry loop handles it
+            raise
+        except Exception as e:
+            logger.error("Error calling Mistral Agent: %s", e)
+            return f"Error: {str(e)}"
+    return "Error: Max retries exceeded due to rate limits. Try again later or upgrade your Mistral plan."
 
 def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE):
     """Translate Sanskrit into Indic languages and English using AI4Bharat IndicTrans2 only."""
