@@ -1,31 +1,28 @@
 # Core Framework
-streamlit==1.39.0
+streamlit>=1.28.0
 
 # Image Processing
-numpy==2.1.1
-opencv-python-headless==4.10.0.84
-Pillow
-pillow-avif-plugin
+opencv-python-headless>=4.8.0  # headless for cloud (no GUI deps)
+numpy>=1.24.0
+Pillow>=10.0.0
+pillow-avif-plugin>=1.4.4
 
 # OCR Engine
-easyocr==1.7.2
+easyocr>=1.7.0
 
 # Environment and Logging
-python-dotenv
-requests
+requests>=2.31.0
 
 # Deep Learning Models
-torch==2.5.1
-torchvision==0.20.1
-torchaudio==2.5.1
-transformers==4.45.2
-sentencepiece
-protobuf
-safetensors
+torch>=2.0.0  # CPU version auto-selected
+transformers>=4.35.0
+sentencepiece>=0.1.99
+protobuf>=4.24.0
+safetensors>=0.4.0
 
 # Translation Support
 googletrans==4.0.0-rc1
 
 # Utilities
-tqdm
-regex
+tqdm>=4.66.0
+regex>=2023.10.3
