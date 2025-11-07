@@ -10,21 +10,18 @@ import os
 import logging
 import re
 import torch
-import time  # For retry backoff
+import time
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 # -------------------- ENV + LOGGING --------------------
-MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")  # Use Streamlit secrets for cloud
-if not MISTRAL_API_KEY:
-    st.error("❌ MISTRAL_API_KEY not found in Streamlit secrets. Set it in app settings.")
+MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")
+MISTRAL_AGENT_ID = st.secrets.get("MISTRAL_AGENT_ID")
+
+if not MISTRAL_API_KEY or not MISTRAL_AGENT_ID:
+    st.error("❌ Missing MISTRAL_API_KEY or MISTRAL_AGENT_ID in Streamlit secrets.")
     st.stop()
 
-MISTRAL_AGENT_ID = st.secrets.get("MISTRAL_AGENT_ID")  # Your custom agent's ID
-if not MISTRAL_AGENT_ID:
-    st.error("❌ MISTRAL_AGENT_ID not found in Streamlit secrets. Create an agent in Mistral Console and add its ID.")
-    st.stop()
-
-MISTRAL_URL = "https://api.mistral.ai/v1/agents/completions"  # Endpoint for agents
+MISTRAL_URL = "https://api.mistral.ai/v1/agents/completions"
 os.environ["NO_PROXY"] = "api.mistral.ai"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,74 +29,101 @@ logger = logging.getLogger(__name__)
 # -------------------- STREAMLIT CONFIG --------------------
 st.set_page_config(page_title="OCR + Sanskrit Cleaner & Translator AI", layout="wide")
 st.title("📖 OCR for Devanagari - Sanskrit Manuscripts + AI Cleaner + Multi-Language Translation")
-st.write("Upload a Sanskrit manuscript → OCR → Custom Mistral AI Agent cleans it → Translates into Indic languages + English (all via AI4Bharat IndicTrans2).")
+st.write(
+    "Upload a Sanskrit manuscript → OCR → Custom Mistral AI Agent cleans it → "
+    "Translates into Indic languages + English (via AI4Bharat IndicTrans2)."
+)
 
-# Sidebar toggle for lighter models (for free tier testing)
 use_light_models = st.sidebar.checkbox("Use Lighter Models (Recommended for Free Tier - Faster, Less RAM)", value=True)
-st.sidebar.info("Full models need Streamlit Pro (8GB RAM). Lighter: ~200MB vs. 4GB.")
+st.sidebar.info("Full models need more memory. Lighter mode uses ~200MB vs ~4GB.")
 
 # -------------------- TRANSLATION MODELS --------------------
 @st.cache_resource
 def load_translation_models():
+    """Load AI4Bharat IndicTrans2 + English translation models with HF token support."""
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+    hf_token = st.secrets.get("HF_TOKEN", None)
+    if not hf_token:
+        st.error("❌ Missing Hugging Face token (HF_TOKEN) in Streamlit secrets.")
+        st.stop()
+
     try:
         if use_light_models:
-            # Lighter Indic-Indic (distilled ~615M; supports san_Deva -> Indic)
+            st.info("🟡 Using lighter configuration (CPU-friendly).")
+
+            # IndicTrans2 Indic→Indic (1B model, float32 for lower memory)
             model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
-            tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
+            tokenizer_indic = AutoTokenizer.from_pretrained(
+                model_name_indic, token=hf_token, trust_remote_code=True
+            )
             model_indic = AutoModelForSeq2SeqLM.from_pretrained(
                 model_name_indic,
+                token=hf_token,
                 trust_remote_code=True,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                low_cpu_mem_usage=True  # Reduce peak RAM
+                torch_dtype=torch.float32,
+                low_cpu_mem_usage=True
             ).to(DEVICE)
-            
-            # Lighter English (Opus-MT ~300MB)
+
+            # English (Opus-MT - lightweight)
             model_name_en = "Helsinki-NLP/opus-mt-san-en"
             tokenizer_en = AutoTokenizer.from_pretrained(model_name_en)
             model_en = AutoModelForSeq2SeqLM.from_pretrained(
-                model_name_en,
-                low_cpu_mem_usage=True
+                model_name_en, low_cpu_mem_usage=True
             ).to(DEVICE)
+
         else:
-            # Full models (requires Pro tier)
+            st.info("💪 Using full IndicTrans2 models (needs higher RAM).")
+
+            # Indic→Indic
             model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
-            tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
+            tokenizer_indic = AutoTokenizer.from_pretrained(
+                model_name_indic, token=hf_token, trust_remote_code=True
+            )
             model_indic = AutoModelForSeq2SeqLM.from_pretrained(
                 model_name_indic,
+                token=hf_token,
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                 low_cpu_mem_usage=True
             ).to(DEVICE)
-            
+
+            # Indic→English
             model_name_en = "ai4bharat/indictrans2-indic-en-1B"
-            tokenizer_en = AutoTokenizer.from_pretrained(model_name_en, trust_remote_code=True)
+            tokenizer_en = AutoTokenizer.from_pretrained(
+                model_name_en, token=hf_token, trust_remote_code=True
+            )
             model_en = AutoModelForSeq2SeqLM.from_pretrained(
                 model_name_en,
+                token=hf_token,
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                 low_cpu_mem_usage=True
             ).to(DEVICE)
-        
-        st.success(f"✅ Models loaded on {DEVICE} (Light mode: {'Yes' if use_light_models else 'No'}).")
+
+        st.success(f"✅ Models loaded successfully on {DEVICE.upper()} "
+                   f"(Light mode: {'Yes' if use_light_models else 'No'})")
+
         return tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE
-        
+
     except torch.cuda.OutOfMemoryError:
-        st.error("❌ Out of GPU memory. Switch to CPU or lighter models.")
+        st.error("❌ Out of GPU memory. Use CPU or switch to light mode.")
         raise
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
-            st.error("❌ Out of RAM (likely free tier limit). Upgrade to Streamlit Pro or use lighter models.")
+            st.error("❌ Out of RAM. Use light mode or upgrade Streamlit tier.")
         else:
-            st.error(f"❌ Runtime error loading models: {e}")
+            st.error(f"❌ Runtime error: {e}")
         raise
     except Exception as e:
-        st.error(f"❌ Model load failed: {e}. Check internet/HF access.")
+        st.error(f"❌ Model load failed: {e}\nCheck your HF token or network access.")
         raise
+
 
 # -------------------- HELPER FUNCTIONS --------------------
 def manual_preprocess_batch(input_sentences, src_lang, tgt_lang):
     return [f"<{src_lang}> {sent.strip()} </s> <{tgt_lang}>" for sent in input_sentences]
+
 
 def manual_postprocess_batch(generated_tokens):
     translations = []
@@ -109,12 +133,13 @@ def manual_postprocess_batch(generated_tokens):
         translations.append(cleaned)
     return translations
 
+
 def preprocess_ocr_text(text: str) -> str:
-    """Keep only Devanagari letters, spaces, and Sanskrit punctuation."""
     return re.sub(r"[^\u0900-\u097F\s।॥]", "", text)
 
+
 def call_mistral_cleaner(noisy_text: str, max_retries=3) -> str:
-    """Send OCR text to your custom Mistral AI Agent for Sanskrit cleaning with retry on rate limits."""
+    """Send OCR text to Mistral AI Agent for Sanskrit cleaning."""
     for attempt in range(max_retries):
         try:
             headers = {
@@ -122,17 +147,17 @@ def call_mistral_cleaner(noisy_text: str, max_retries=3) -> str:
                 "Content-Type": "application/json"
             }
             payload = {
-                "agent_id": MISTRAL_AGENT_ID,  # Use your agent's ID here
+                "agent_id": MISTRAL_AGENT_ID,
                 "messages": [
                     {
                         "role": "user",
-                        "content": f"Clean this noisy OCR Sanskrit text: {noisy_text}\n\nOutput only the cleaned Devanagari text."  # Simplified—agent has full instructions baked in
+                        "content": f"Clean this noisy OCR Sanskrit text: {noisy_text}\n\nOutput only the cleaned Devanagari text."
                     }
                 ]
             }
             response = requests.post(MISTRAL_URL, headers=headers, json=payload, proxies={"http": "", "https": ""})
             if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", 60))  # Use header or default 60s
+                retry_after = int(response.headers.get("Retry-After", 60))
                 st.warning(f"⏳ Rate limit hit. Retrying in {retry_after}s... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(retry_after)
                 continue
@@ -142,15 +167,16 @@ def call_mistral_cleaner(noisy_text: str, max_retries=3) -> str:
             return cleaned_text.strip() if cleaned_text else "Error: No output from Agent."
         except requests.exceptions.HTTPError as e:
             if e.response and e.response.status_code == 429:
-                continue  # Retry loop handles it
+                continue
             raise
         except Exception as e:
             logger.error("Error calling Mistral Agent: %s", e)
             return f"Error: {str(e)}"
-    return "Error: Max retries exceeded due to rate limits. Try again later or upgrade your Mistral plan."
+    return "Error: Max retries exceeded. Try again later."
+
 
 def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE):
-    """Translate Sanskrit into Indic languages and English using AI4Bharat IndicTrans2 only."""
+    """Translate Sanskrit into Indic and English using AI4Bharat + OpusMT."""
     try:
         src_lang = "san_Deva"
         target_langs = ["hin_Deva", "kan_Knda", "tam_Taml", "tel_Telu"]
@@ -162,58 +188,53 @@ def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer
         }
         input_sentences = [cleaned_sanskrit]
         translations_dict = {}
-        
-        # English translation (using IndicTrans2 Indic-En model or Opus-MT for light)
+
+        # English translation
         if use_light_models:
-            # Opus-MT: No tags needed
             inputs_en = tokenizer_en(input_sentences, return_tensors="pt", padding=True, truncation=True).to(DEVICE)
             with torch.no_grad():
                 generated_en = model_en.generate(**inputs_en, max_length=512, num_beams=5, early_stopping=True)
             english_trans = tokenizer_en.decode(generated_en[0], skip_special_tokens=True).strip()
         else:
-            # Full Indic-En with tags
             tgt_lang_en = "eng_Latn"
             batch_en = manual_preprocess_batch(input_sentences, src_lang, tgt_lang_en)
             inputs_en = tokenizer_en(batch_en, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
             with torch.no_grad():
                 generated_en = model_en.generate(
-                    **inputs_en,
-                    max_length=512,
-                    num_beams=5,
-                    num_return_sequences=1,
-                    use_cache=False
+                    **inputs_en, max_length=512, num_beams=5, num_return_sequences=1, use_cache=False
                 )
             generated_en_decoded = tokenizer_en.batch_decode(generated_en, skip_special_tokens=True)
             english_trans = manual_postprocess_batch(generated_en_decoded)[0]
-        
+
+        # Indic translations
         for tgt_lang in target_langs:
             batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
             inputs = tokenizer_indic(batch, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
             with torch.no_grad():
                 generated_tokens = model_indic.generate(
                     **inputs,
-                    max_length=2048 if not use_light_models else 512,  # Shorter for light
+                    max_length=2048 if not use_light_models else 1024,
                     num_beams=5,
                     num_return_sequences=1,
                     use_cache=False
                 )
             generated_decoded = tokenizer_indic.batch_decode(generated_tokens, skip_special_tokens=True)
             translations_indic = manual_postprocess_batch(generated_decoded)
-            trans_indic = translations_indic[0]
             translations_dict[tgt_lang] = {
-                "indic": trans_indic,
-                "english": english_trans,  # Reuse across langs
+                "indic": translations_indic[0],
+                "english": english_trans,
                 "lang_name": lang_names[tgt_lang]
             }
         return translations_dict
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
-            st.error("❌ Translation OOM. Use lighter models or upgrade to Pro.")
+            st.error("❌ Translation OOM. Use light models or CPU mode.")
         else:
             st.error(f"❌ Translation error: {e}")
         raise
 
-# -------------------- STREAMLIT APP --------------------
+
+# -------------------- MAIN APP --------------------
 uploaded_file = st.file_uploader("Upload a Sanskrit manuscript image", type=["png", "jpg", "jpeg", "avif"])
 
 if "cleaned_sanskrit" not in st.session_state:
@@ -231,17 +252,18 @@ if uploaded_file:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.image(pil_img, caption="📷 Original Image", width="stretch")
+        st.image(pil_img, caption="📷 Original Image", use_container_width=True)
     with col2:
-        st.image(Image.fromarray(final_text_only), caption="🧾 Processed Text-Only Image", width="stretch")
+        st.image(Image.fromarray(final_text_only), caption="🧾 Processed Text-Only Image", use_container_width=True)
 
     st.subheader("🔍 Extracted OCR Text")
-    with st.spinner("Initializing EasyOCR (downloads models on first run; may take 2-5 min on CPU)..."):
+    with st.spinner("Initializing EasyOCR..."):
         try:
             reader = easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
         except Exception as e:
-            st.error(f"❌ EasyOCR init failed: {e}. Check RAM/network.")
+            st.error(f"❌ EasyOCR initialization failed: {e}")
             st.stop()
+
     results = reader.readtext(image, detail=1, paragraph=True)
     extracted_text = " ".join([res[1] for res in results])
 
@@ -250,8 +272,8 @@ if uploaded_file:
         st.text_area("Extracted Text", extracted_text, height=200)
         noisy_text = preprocess_ocr_text(extracted_text)
 
-        if st.button("✨ Clean OCR Text with Custom Mistral AI Agent"):
-            with st.spinner("Cleaning Sanskrit text using your Mistral Agent... (may retry on rate limits)"):
+        if st.button("✨ Clean OCR Text with Mistral AI Agent"):
+            with st.spinner("Cleaning Sanskrit text..."):
                 cleaned_sanskrit = call_mistral_cleaner(noisy_text)
                 if cleaned_sanskrit.startswith("Error"):
                     st.error(cleaned_sanskrit)
@@ -266,7 +288,7 @@ if uploaded_file:
             if st.button("🌐 Translate to Indic Languages + English"):
                 if use_light_models:
                     st.info("🟡 Using lighter models—faster but slightly less accurate.")
-                st.warning("⏳ Translation on CPU: 30s–2 min (light) or 2–5 min (full). Models load once.")
+                st.warning("⏳ Translation on CPU: 30s–2 min. Models load once per session.")
                 with st.spinner("Loading translation models and generating translations..."):
                     try:
                         tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE = load_translation_models()
@@ -276,7 +298,7 @@ if uploaded_file:
                         )
                         st.session_state.translations = translations
                     except Exception as e:
-                        st.exception(e)  # Show full traceback for debug
+                        st.exception(e)
 
         if st.session_state.translations:
             st.subheader("🌍 Translations")
@@ -290,4 +312,3 @@ if uploaded_file:
         st.warning("⚠️ No text detected. Try uploading a clearer image.")
 else:
     st.info("👆 Upload an image to start!")
-
