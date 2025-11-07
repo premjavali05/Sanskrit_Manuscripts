@@ -17,7 +17,13 @@ MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")  # Use Streamlit secrets for
 if not MISTRAL_API_KEY:
     st.error("❌ MISTRAL_API_KEY not found in Streamlit secrets. Set it in app settings.")
     st.stop()
-MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
+
+MISTRAL_AGENT_ID = st.secrets.get("MISTRAL_AGENT_ID")  # Your custom agent's ID
+if not MISTRAL_AGENT_ID:
+    st.error("❌ MISTRAL_AGENT_ID not found in Streamlit secrets. Create an agent in Mistral Console and add its ID.")
+    st.stop()
+
+MISTRAL_URL = "https://api.mistral.ai/v1/agents/completions"  # Endpoint for agents
 os.environ["NO_PROXY"] = "api.mistral.ai"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,7 +31,7 @@ logger = logging.getLogger(__name__)
 # -------------------- STREAMLIT CONFIG --------------------
 st.set_page_config(page_title="OCR + Sanskrit Cleaner & Translator AI", layout="wide")
 st.title("📖 OCR for Devanagari - Sanskrit Manuscripts + AI Cleaner + Multi-Language Translation")
-st.write("Upload a Sanskrit manuscript → OCR → Mistral AI cleans it → Translates into Indic languages + English (all via AI4Bharat IndicTrans2).")
+st.write("Upload a Sanskrit manuscript → OCR → Custom Mistral AI Agent cleans it → Translates into Indic languages + English (all via AI4Bharat IndicTrans2).")
 
 # -------------------- TRANSLATION MODELS --------------------
 @st.cache_resource
@@ -72,34 +78,18 @@ def preprocess_ocr_text(text: str) -> str:
     return re.sub(r"[^\u0900-\u097F\s।॥]", "", text)
 
 def call_mistral_cleaner(noisy_text: str) -> str:
-    """Send OCR text to Mistral AI for Sanskrit cleaning."""
+    """Send OCR text to your custom Mistral AI Agent for Sanskrit cleaning."""
     try:
         headers = {
             "Authorization": f"Bearer {MISTRAL_API_KEY}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "mistral-medium",
+            "agent_id": MISTRAL_AGENT_ID,  # Use your agent's ID here
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""
-You are a Sanskrit AI specialized in cleaning OCR text.
-Rules:
-1. Correct OCR errors, misrecognized characters, misplaced diacritics.
-2. Remove Latin letters, numbers, and special symbols.
-3. Correct spacing, punctuation, and grammar.
-4. Preserve original Sanskrit meaning — do NOT translate.
-5. Output only Devanagari Sanskrit text with correct punctuation like | and ॥.
-Input OCR Text:
-{noisy_text}
-Output only the cleaned Sanskrit text:
-"""
-                        }
-                    ]
+                    "content": f"Clean this noisy OCR Sanskrit text: {noisy_text}\n\nOutput only the cleaned Devanagari text."  # Simplified—agent has full instructions baked in
                 }
             ]
         }
@@ -107,9 +97,9 @@ Output only the cleaned Sanskrit text:
         response.raise_for_status()
         result = response.json()
         cleaned_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return cleaned_text.strip() if cleaned_text else "Error: No output from Mistral."
+        return cleaned_text.strip() if cleaned_text else "Error: No output from Agent."
     except Exception as e:
-        logger.error("Error calling Mistral AI: %s", e)
+        logger.error("Error calling Mistral Agent: %s", e)
         return f"Error: {str(e)}"
 
 def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE):
@@ -193,8 +183,8 @@ if uploaded_file:
         st.text_area("Extracted Text", extracted_text, height=200)
         noisy_text = preprocess_ocr_text(extracted_text)
 
-        if st.button("✨ Clean OCR Text with Mistral AI"):
-            with st.spinner("Cleaning Sanskrit text using Mistral AI..."):
+        if st.button("✨ Clean OCR Text with Custom Mistral AI Agent"):
+            with st.spinner("Cleaning Sanskrit text using your Mistral Agent..."):
                 cleaned_sanskrit = call_mistral_cleaner(noisy_text)
                 if cleaned_sanskrit.startswith("Error"):
                     st.error(cleaned_sanskrit)
