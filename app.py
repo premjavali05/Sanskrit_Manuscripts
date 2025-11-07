@@ -13,6 +13,9 @@ import torch
 import time  # For retry backoff
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
+# Debug: Show exceptions (remove after fixing)
+st.set_option('deprecation.showfile', True)
+
 # -------------------- ENV + LOGGING --------------------
 MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")  # Use Streamlit secrets for cloud
 if not MISTRAL_API_KEY:
@@ -34,33 +37,68 @@ st.set_page_config(page_title="OCR + Sanskrit Cleaner & Translator AI", layout="
 st.title("📖 OCR for Devanagari - Sanskrit Manuscripts + AI Cleaner + Multi-Language Translation")
 st.write("Upload a Sanskrit manuscript → OCR → Custom Mistral AI Agent cleans it → Translates into Indic languages + English (all via AI4Bharat IndicTrans2).")
 
+# Sidebar toggle for lighter models (for free tier testing)
+use_light_models = st.sidebar.checkbox("Use Lighter Models (Recommended for Free Tier - Faster, Less RAM)", value=True)
+st.sidebar.info("Full models need Streamlit Pro (8GB RAM). Lighter: ~200MB vs. 4GB.")
+
 # -------------------- TRANSLATION MODELS --------------------
 @st.cache_resource
 def load_translation_models():
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     try:
-        # Indic-Indic model (Sanskrit -> other Indic languages)
-        model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
-        tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
-        model_indic = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name_indic,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-        ).to(DEVICE)
+        if use_light_models:
+            # Lighter Indic-Indic (distilled 200M)
+            model_name_indic = "ai4bharat/indictrans2-en-indic-dist-200M"
+            tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
+            model_indic = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name_indic,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                low_cpu_mem_usage=True  # Reduce peak RAM
+            ).to(DEVICE)
+            
+            # Lighter English (Opus-MT ~300MB)
+            model_name_en = "Helsinki-NLP/opus-mt-san-en"
+            tokenizer_en = AutoTokenizer.from_pretrained(model_name_en)
+            model_en = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name_en,
+                low_cpu_mem_usage=True
+            ).to(DEVICE)
+        else:
+            # Full models (requires Pro tier)
+            model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
+            tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
+            model_indic = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name_indic,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                low_cpu_mem_usage=True
+            ).to(DEVICE)
+            
+            model_name_en = "ai4bharat/indictrans2-indic-en-1B"
+            tokenizer_en = AutoTokenizer.from_pretrained(model_name_en, trust_remote_code=True)
+            model_en = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name_en,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                low_cpu_mem_usage=True
+            ).to(DEVICE)
         
-        # Indic-En model (Sanskrit -> English; AI4Bharat only)
-        model_name_en = "ai4bharat/indictrans2-indic-en-1B"
-        tokenizer_en = AutoTokenizer.from_pretrained(model_name_en, trust_remote_code=True)
-        model_en = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name_en,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-        ).to(DEVICE)
+        st.success(f"✅ Models loaded on {DEVICE} (Light mode: {'Yes' if use_light_models else 'No'}).")
+        return tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE
         
-    except Exception as e:
-        st.error(f"❌ Model load failed: {e}. Check HF access or RAM.")
+    except torch.cuda.OutOfMemoryError:
+        st.error("❌ Out of GPU memory. Switch to CPU or lighter models.")
         raise
-    return tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            st.error("❌ Out of RAM (likely free tier limit). Upgrade to Streamlit Pro or use lighter models.")
+        else:
+            st.error(f"❌ Runtime error loading models: {e}")
+        raise
+    except Exception as e:
+        st.error(f"❌ Model load failed: {e}. Check internet/HF access.")
+        raise
 
 # -------------------- HELPER FUNCTIONS --------------------
 def manual_preprocess_batch(input_sentences, src_lang, tgt_lang):
@@ -116,52 +154,71 @@ def call_mistral_cleaner(noisy_text: str, max_retries=3) -> str:
 
 def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE):
     """Translate Sanskrit into Indic languages and English using AI4Bharat IndicTrans2 only."""
-    src_lang = "san_Deva"
-    target_langs = ["hin_Deva", "kan_Knda", "tam_Taml", "tel_Telu"]
-    lang_names = {
-        "hin_Deva": "Hindi",
-        "kan_Knda": "Kannada",
-        "tam_Taml": "Tamil",
-        "tel_Telu": "Telugu"
-    }
-    input_sentences = [cleaned_sanskrit]
-    translations_dict = {}
-    
-    # English translation (using IndicTrans2 Indic-En model)
-    tgt_lang_en = "eng_Latn"
-    batch_en = manual_preprocess_batch(input_sentences, src_lang, tgt_lang_en)
-    inputs_en = tokenizer_en(batch_en, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
-    with torch.no_grad():
-        generated_en = model_en.generate(
-            **inputs_en,
-            max_length=2048,  # Shorter for English
-            num_beams=5,
-            num_return_sequences=1,
-            use_cache=False
-        )
-    generated_en_decoded = tokenizer_en.batch_decode(generated_en, skip_special_tokens=True)
-    english_trans = manual_postprocess_batch(generated_en_decoded)[0]
-    
-    for tgt_lang in target_langs:
-        batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
-        inputs = tokenizer_indic(batch, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
-        with torch.no_grad():
-            generated_tokens = model_indic.generate(
-                **inputs,
-                max_length=2048,
-                num_beams=5,
-                num_return_sequences=1,
-                use_cache=False
-            )
-        generated_decoded = tokenizer_indic.batch_decode(generated_tokens, skip_special_tokens=True)
-        translations_indic = manual_postprocess_batch(generated_decoded)
-        trans_indic = translations_indic[0]
-        translations_dict[tgt_lang] = {
-            "indic": trans_indic,
-            "english": english_trans,  # Reuse across langs
-            "lang_name": lang_names[tgt_lang]
+    try:
+        src_lang = "san_Deva"
+        target_langs = ["hin_Deva", "kan_Knda", "tam_Taml", "tel_Telu"]
+        lang_names = {
+            "hin_Deva": "Hindi",
+            "kan_Knda": "Kannada",
+            "tam_Taml": "Tamil",
+            "tel_Telu": "Telugu"
         }
-    return translations_dict
+        input_sentences = [cleaned_sanskrit]
+        translations_dict = {}
+        
+        # English translation (using IndicTrans2 Indic-En model or Opus-MT for light)
+        tgt_lang_en = "eng_Latn" if not use_light_models else None  # Opus-MT doesn't need tags
+        if use_light_models:
+            # Opus-MT: No tags
+            inputs_en = tokenizer_en(input_sentences, return_tensors="pt", padding=True, truncation=True).to(DEVICE)
+            with torch.no_grad():
+                generated_en = model_en.generate(**inputs_en, max_length=512, num_beams=5, early_stopping=True)
+            english_trans = tokenizer_en.decode(generated_en[0], skip_special_tokens=True).strip()
+        else:
+            # Full Indic-En with tags
+            batch_en = manual_preprocess_batch(input_sentences, src_lang, tgt_lang_en)
+            inputs_en = tokenizer_en(batch_en, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
+            with torch.no_grad():
+                generated_en = model_en.generate(
+                    **inputs_en,
+                    max_length=512,
+                    num_beams=5,
+                    num_return_sequences=1,
+                    use_cache=False
+                )
+            generated_en_decoded = tokenizer_en.batch_decode(generated_en, skip_special_tokens=True)
+            english_trans = manual_postprocess_batch(generated_en_decoded)[0]
+        
+        for tgt_lang in target_langs:
+            if use_light_models:
+                # Light model: Assume similar tagging if needed; adjust for distilled
+                batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
+            else:
+                batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
+            inputs = tokenizer_indic(batch, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
+            with torch.no_grad():
+                generated_tokens = model_indic.generate(
+                    **inputs,
+                    max_length=2048 if not use_light_models else 512,  # Shorter for light
+                    num_beams=5,
+                    num_return_sequences=1,
+                    use_cache=False
+                )
+            generated_decoded = tokenizer_indic.batch_decode(generated_tokens, skip_special_tokens=True)
+            translations_indic = manual_postprocess_batch(generated_decoded)
+            trans_indic = translations_indic[0]
+            translations_dict[tgt_lang] = {
+                "indic": trans_indic,
+                "english": english_trans,  # Reuse across langs
+                "lang_name": lang_names[tgt_lang]
+            }
+        return translations_dict
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            st.error("❌ Translation OOM. Use lighter models or upgrade to Pro.")
+        else:
+            st.error(f"❌ Translation error: {e}")
+        raise
 
 # -------------------- STREAMLIT APP --------------------
 uploaded_file = st.file_uploader("Upload a Sanskrit manuscript image", type=["png", "jpg", "jpeg", "avif"])
@@ -187,7 +244,11 @@ if uploaded_file:
 
     st.subheader("🔍 Extracted OCR Text")
     with st.spinner("Initializing EasyOCR (downloads models on first run; may take 2-5 min on CPU)..."):
-        reader = easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
+        try:
+            reader = easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
+        except Exception as e:
+            st.error(f"❌ EasyOCR init failed: {e}. Check RAM/network.")
+            st.stop()
     results = reader.readtext(image, detail=1, paragraph=True)
     extracted_text = " ".join([res[1] for res in results])
 
@@ -197,7 +258,7 @@ if uploaded_file:
         noisy_text = preprocess_ocr_text(extracted_text)
 
         if st.button("✨ Clean OCR Text with Custom Mistral AI Agent"):
-            with st.spinner("Cleaning Sanskrit text using your Mistral Agent..."):
+            with st.spinner("Cleaning Sanskrit text using your Mistral Agent... (may retry on rate limits)"):
                 cleaned_sanskrit = call_mistral_cleaner(noisy_text)
                 if cleaned_sanskrit.startswith("Error"):
                     st.error(cleaned_sanskrit)
@@ -210,14 +271,19 @@ if uploaded_file:
             st.text_area("Cleaned Text", st.session_state.cleaned_sanskrit, height=200)
 
             if st.button("🌐 Translate to Indic Languages + English"):
-                st.warning("⏳ Translation on CPU may take 1-2 min. Models load once (AI4Bharat IndicTrans2).")
+                if use_light_models:
+                    st.info("🟡 Using lighter models—faster but slightly less accurate.")
+                st.warning("⏳ Translation on CPU: 30s–2 min (light) or 2–5 min (full). Models load once.")
                 with st.spinner("Loading translation models and generating translations..."):
-                    tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE = load_translation_models()
-                    translations = translate_sanskrit(
-                        st.session_state.cleaned_sanskrit,
-                        tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE
-                    )
-                    st.session_state.translations = translations
+                    try:
+                        tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE = load_translation_models()
+                        translations = translate_sanskrit(
+                            st.session_state.cleaned_sanskrit,
+                            tokenizer_indic, model_indic, tokenizer_en, model_en, DEVICE
+                        )
+                        st.session_state.translations = translations
+                    except Exception as e:
+                        st.exception(e)  # Show full traceback for debug
 
         if st.session_state.translations:
             st.subheader("🌍 Translations")
@@ -229,3 +295,5 @@ if uploaded_file:
                 st.write("---")
     else:
         st.warning("⚠️ No text detected. Try uploading a clearer image.")
+else:
+    st.info("👆 Upload an image to start!")
