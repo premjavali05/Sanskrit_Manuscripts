@@ -2,7 +2,7 @@
 streamlit>=1.28.0
 
 # Image Processing
-opencv-python-headless>=4.8.0  # headless for cloud (no GUI deps)
+opencv-python-headless>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
 pillow-avif-plugin>=1.4.4
@@ -14,14 +14,11 @@ easyocr>=1.7.0
 requests>=2.31.0
 
 # Deep Learning Models
-torch>=2.0.0  # CPU version auto-selected
+torch>=2.0.0
 transformers>=4.35.0
 sentencepiece>=0.1.99
 protobuf>=4.24.0
 safetensors>=0.4.0
-
-# Translation Support
-googletrans==4.0.0-rc1
 
 # Utilities
 tqdm>=4.66.0
