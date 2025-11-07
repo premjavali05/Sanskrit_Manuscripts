@@ -13,9 +13,6 @@ import torch
 import time  # For retry backoff
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-# Debug: Show exceptions (remove after fixing)
-st.set_option('deprecation.showfile', True)
-
 # -------------------- ENV + LOGGING --------------------
 MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")  # Use Streamlit secrets for cloud
 if not MISTRAL_API_KEY:
@@ -47,8 +44,8 @@ def load_translation_models():
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     try:
         if use_light_models:
-            # Lighter Indic-Indic (distilled 200M)
-            model_name_indic = "ai4bharat/indictrans2-en-indic-dist-200M"
+            # Lighter Indic-Indic (distilled ~615M; supports san_Deva -> Indic)
+            model_name_indic = "ai4bharat/indictrans2-indic-indic-dist-615M"
             tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, trust_remote_code=True)
             model_indic = AutoModelForSeq2SeqLM.from_pretrained(
                 model_name_indic,
@@ -167,15 +164,15 @@ def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer
         translations_dict = {}
         
         # English translation (using IndicTrans2 Indic-En model or Opus-MT for light)
-        tgt_lang_en = "eng_Latn" if not use_light_models else None  # Opus-MT doesn't need tags
         if use_light_models:
-            # Opus-MT: No tags
+            # Opus-MT: No tags needed
             inputs_en = tokenizer_en(input_sentences, return_tensors="pt", padding=True, truncation=True).to(DEVICE)
             with torch.no_grad():
                 generated_en = model_en.generate(**inputs_en, max_length=512, num_beams=5, early_stopping=True)
             english_trans = tokenizer_en.decode(generated_en[0], skip_special_tokens=True).strip()
         else:
             # Full Indic-En with tags
+            tgt_lang_en = "eng_Latn"
             batch_en = manual_preprocess_batch(input_sentences, src_lang, tgt_lang_en)
             inputs_en = tokenizer_en(batch_en, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
             with torch.no_grad():
@@ -190,11 +187,7 @@ def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer
             english_trans = manual_postprocess_batch(generated_en_decoded)[0]
         
         for tgt_lang in target_langs:
-            if use_light_models:
-                # Light model: Assume similar tagging if needed; adjust for distilled
-                batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
-            else:
-                batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
+            batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
             inputs = tokenizer_indic(batch, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
             with torch.no_grad():
                 generated_tokens = model_indic.generate(
