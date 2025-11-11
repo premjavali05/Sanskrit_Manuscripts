@@ -14,11 +14,11 @@ import time
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from deep_translator import GoogleTranslator # Replaces googletrans
 # -------------------- ENV + LOGGING --------------------
-MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")
-MISTRAL_AGENT_ID = st.secrets.get("MISTRAL_AGENT_ID")
-HF_TOKEN = st.secrets.get("HF_TOKEN")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+MISTRAL_AGENT_ID = os.environ.get("MISTRAL_AGENT_ID")
+HF_TOKEN = os.environ.get("HF_TOKEN")
 if not MISTRAL_API_KEY or not MISTRAL_AGENT_ID or not HF_TOKEN:
-    st.error("❌ Missing required keys in Streamlit secrets. Please check HF_TOKEN, MISTRAL_API_KEY, and MISTRAL_AGENT_ID.")
+    st.error("❌ Missing required keys in environment variables. Check Render dashboard.")
     st.stop()
 MISTRAL_URL = "https://api.mistral.ai/v1/agents/completions"
 os.environ["NO_PROXY"] = "api.mistral.ai"
@@ -183,13 +183,13 @@ def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer
         with torch.no_grad():
             generated_en = model_en.generate(
                 **inputs_en,
-                max_length=1024,  # Reduced for speed
-                num_beams=3,      # Reduced for speed (still accurate)
+                max_length=1024, # Reduced for speed
+                num_beams=3, # Reduced for speed (still accurate)
                 num_return_sequences=1,
-                use_cache=True    # Enabled for speedup
+                use_cache=True # Enabled for speedup
             )
         english_raw = tokenizer_en.batch_decode(generated_en, skip_special_tokens=True)[0].strip()
-        english_trans = manual_postprocess_batch([english_raw], tgt_lang_en)[0]  # Remove leading tag
+        english_trans = manual_postprocess_batch([english_raw], tgt_lang_en)[0] # Remove leading tag
         if not english_trans:
             try:
                 english_trans = translator.translate(cleaned_sanskrit)
@@ -204,13 +204,13 @@ def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer
             with torch.no_grad():
                 generated_tokens = model_indic.generate(
                     **inputs,
-                    max_length=1024,  # Reduced for speed
-                    num_beams=3,      # Reduced for speed
+                    max_length=1024, # Reduced for speed
+                    num_beams=3, # Reduced for speed
                     num_return_sequences=1,
-                    use_cache=True    # Enabled for speedup
+                    use_cache=True # Enabled for speedup
                 )
             indic_raw = tokenizer_indic.batch_decode(generated_tokens, skip_special_tokens=True)[0].strip()
-            trans_indic = manual_postprocess_batch([indic_raw], tgt_lang)[0]  # Remove leading tag
+            trans_indic = manual_postprocess_batch([indic_raw], tgt_lang)[0] # Remove leading tag
             translations_dict[tgt_lang] = {
                 "indic": trans_indic,
                 "english": english_trans,
