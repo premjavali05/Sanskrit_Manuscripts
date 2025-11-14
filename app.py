@@ -12,106 +12,69 @@ import re
 import torch
 import time
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-from deep_translator import GoogleTranslator # Replaces googletrans
+from deep_translator import GoogleTranslator
+from IndicTransToolkit.processor import IndicProcessor # ← use the official pre/post processor
 # -------------------- ENV + LOGGING --------------------
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
-MISTRAL_AGENT_ID = os.environ.get("MISTRAL_AGENT_ID")
-HF_TOKEN = os.environ.get("HF_TOKEN")
+MISTRAL_API_KEY = st.secrets.get("MISTRAL_API_KEY")
+MISTRAL_AGENT_ID = st.secrets.get("MISTRAL_AGENT_ID")
+HF_TOKEN = st.secrets.get("HF_TOKEN")
 if not MISTRAL_API_KEY or not MISTRAL_AGENT_ID or not HF_TOKEN:
-    st.error("❌ Missing required keys in environment variables. Check Render dashboard.")
+    st.error("❌ Missing required keys in Streamlit secrets. Please set HF_TOKEN, MISTRAL_API_KEY, and MISTRAL_AGENT_ID.")
     st.stop()
 MISTRAL_URL = "https://api.mistral.ai/v1/agents/completions"
 os.environ["NO_PROXY"] = "api.mistral.ai"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# (Optional) keep CPU threads modest on Spaces
+try:
+    torch.set_num_threads(4)
+except Exception:
+    pass
 # -------------------- STREAMLIT CONFIG --------------------
 st.set_page_config(page_title="OCR + Sanskrit Cleaner & Translator AI", layout="wide")
 st.title("📖 OCR for Devanagari - Sanskrit Manuscripts + AI Cleaner + Multi-Language Translation")
 st.write(
     "Upload a Sanskrit manuscript → OCR → Mistral AI cleans it → "
-    "Translates into Indic languages + English using AI4Bharat IndicTrans2 models."
+    "Translates into Indic languages using AI4Bharat IndicTrans2 (single model). English via fallback."
 )
-# -------------------- CONSTANTS --------------------
-VALID_TAGS = [
-    "asm_Beng", "ben_Beng", "guj_Gujr", "hin_Deva", "kan_Knda",
-    "mal_Mlym", "mar_Deva", "nep_Deva", "ori_Orya", "pan_Guru",
-    "san_Deva", "tam_Taml", "tel_Telu", "eng_Latn"
-]
-TARGET_LANGS = ["hin_Deva", "kan_Knda", "tam_Taml", "tel_Telu"]
+TARGET_LANGS = ["hin_Deva", "kan_Knda", "tam_Taml", "tel_Telu"] # Hindi, Kannada, Tamil, Telugu
 LANG_NAMES = {
     "hin_Deva": "Hindi",
     "kan_Knda": "Kannada",
     "tam_Taml": "Tamil",
-    "tel_Telu": "Telugu"
+    "tel_Telu": "Telugu",
 }
-# -------------------- LOAD MODELS --------------------
-@st.cache_resource
-def load_translation_models():
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    try:
-        st.info("💪 Loading AI4Bharat IndicTrans2 models (requires Hugging Face token)...")
-        # Indic→Indic
-        model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
-        tokenizer_indic = AutoTokenizer.from_pretrained(model_name_indic, token=HF_TOKEN, trust_remote_code=True)
-        model_indic = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name_indic,
-            token=HF_TOKEN,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            low_cpu_mem_usage=True
-        ).to(DEVICE)
-        # Indic→English
-        model_name_en = "ai4bharat/indictrans2-indic-en-1B"
-        tokenizer_en = AutoTokenizer.from_pretrained(model_name_en, token=HF_TOKEN, trust_remote_code=True)
-        model_en = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name_en,
-            token=HF_TOKEN,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            low_cpu_mem_usage=True
-        ).to(DEVICE)
-        st.success(f"✅ Models loaded successfully on {DEVICE.upper()}.")
-        translator = GoogleTranslator(source="auto", target="en")
-        return tokenizer_indic, model_indic, tokenizer_en, model_en, translator, DEVICE
-    except Exception as e:
-        st.error(f"❌ Model loading failed: {e}")
-        raise
-# -------------------- HELPERS --------------------
-def sanitize_text_for_tags(text: str) -> str:
-    """Clean Sanskrit text to remove unwanted symbols before tagging."""
-    text = re.sub(r"[<>]", "", text)
-    text = re.sub(r"[।॥]+$", "", text)
-    text = text.strip()
-    return text
-def manual_preprocess_batch(input_sentences, src_lang: str, tgt_lang: str):
-    """Format text for IndicTrans2 with space-separated tags (per official docs)."""
-    assert src_lang in VALID_TAGS, f"Invalid source language tag: {src_lang}"
-    assert tgt_lang in VALID_TAGS, f"Invalid target language tag: {tgt_lang}"
-    cleaned_batch = []
-    for sent in input_sentences:
-        sent = sanitize_text_for_tags(sent)
-        # Format: "san_Deva eng_Latn cleaned_text" (no < > or </s>)
-        cleaned_batch.append(f"{src_lang} {tgt_lang} {sent.strip()}")
-    return cleaned_batch
-def manual_postprocess_batch(generated_tokens, tgt_lang: str = None):
-    """Postprocess to remove leading tgt_lang tag from generated text."""
-    translations = []
-    for tokens in generated_tokens:
-        cleaned = tokens.strip()
-        # Remove leading tgt_lang (e.g., "eng_Latn translated_text" -> "translated_text")
-        # Fallback to removing first word+space if tgt_lang unknown
-        if tgt_lang:
-            cleaned = re.sub(rf"^{re.escape(tgt_lang)}\s+", "", cleaned)
-        else:
-            cleaned = re.sub(r"^\S+\s+", "", cleaned)
-        translations.append(cleaned)
-    return translations
+# -------------------- UTILITIES --------------------
 def preprocess_ocr_text(text: str) -> str:
     """Keep only Devanagari letters, spaces, and Sanskrit punctuation."""
-    return re.sub(r"[^\u0900-\u097F\s।॥]", "", text)
+    text = re.sub(r"[^\u0900-\u097F\s।॥]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+def sanitize_for_processor(text: str) -> str:
+    """Remove angle brackets and trailing dandas from the *content* (toolkit handles tags)."""
+    text = text.replace("<", "").replace(">", "")
+    text = re.sub(r"[।॥]+\s*$", "", text).strip()
+    return text
+def split_sanskrit_verses(text: str) -> list:
+    """Split Sanskrit text into verses/sentences using । and ॥ as delimiters.
+    Preserves the punctuation for re-joining.
+    """
+    # Split on । or ॥, but keep the delimiter with each chunk (except possibly last)
+    parts = re.split(r'([।॥])', text.strip())
+    verses = []
+    current_verse = ""
+    for part in parts:
+        if part in ['।', '॥']:
+            current_verse += part + " " # Add space after punctuation for natural flow
+            verses.append(current_verse.strip())
+            current_verse = ""
+        else:
+            current_verse += part
+    if current_verse.strip(): # Add any trailing text
+        verses.append(current_verse.strip())
+    return [v.strip() for v in verses if v.strip()]
 def call_mistral_cleaner(noisy_text: str, max_retries=3) -> str:
-    """Clean OCR Sanskrit text via Mistral Agent."""
-    # Full instructions for the agent
+    """Clean OCR Sanskrit text via your Mistral Agent."""
     instructions = """You are an AI agent specialized in cleaning, correcting, and restoring Sanskrit text extracted from OCR (Optical Character Recognition) outputs.
 Your job is to transform noisy, imperfect, or partially garbled Sanskrit text into a clean, readable, and grammatically correct Sanskrit version written only in Devanagari script.
 OBJECTIVE
@@ -119,29 +82,24 @@ Correct OCR-induced spelling errors, misrecognized characters, and misplaced dia
 Preserve the original Sanskrit meaning and structure.
 Maintain the Devanagari script output—never use transliteration or translation.
 Output only the corrected Sanskrit text, with no explanations or extra commentary.
- RULES
-Do not translate Sanskrit text into English or any other language.
-Do not add new words, meanings, or interpretations.
-Fix common OCR issues, such as:
-Misplaced or missing characters (e.g., "भथरात्रिसृत्तं" → "भद्ररात्रिस्मृतं")
-Incorrect visarga, anusvāra, or vowel marks
-Extra or missing spaces
-Garbled or duplicated words
-Presence of Latin or special characters—remove them
-Keep Sanskrit grammar intact while restoring readable structure.
-Preserve Sanskrit punctuation symbols like "।" and "॥".
-Normalize spaces and diacritics.
-If uncertain about a specific fragment, reconstruct the closest grammatically valid Sanskrit phrase.
+RULES
+Do not translate Sanskrit text into any other language.
+Do not add new words.
+Fix errors like:
+- Missing or extra characters
+- Wrong vowel marks
+- Garbled words
+- Latin characters
+- Bad spacing
+Keep Sanskrit grammar intact.
+Preserve punctuation symbols like । and ॥.
 OUTPUT FORMAT
-Output must contain only the cleaned Sanskrit text.
-Use Devanagari script only.
-Do not include any English words, explanations, or formatting.
+Only output the cleaned Sanskrit text.
+No explanation. No formatting. No English.
 Sample Input:
 "र) ।श्रीगणेगा यनमध। ।भथरात्रिसृत्तं ) )) पीवष्ियाधित पर्प्री व्याक्षनिनविखव ) )"
 Sample Output:
-"। श्रीगणेशाय नमः । भद्ररात्रिस्मृतं । पीयूषाधित प्रप्री व्याख्यानविख्यातम् ।"
-Your single responsibility is:
-Take corrupted OCR Sanskrit text as input → Produce a clean, readable, and grammatically valid Sanskrit version in Devanagari script only."""
+"। श्रीगणेशाय नमः । भद्ररात्रिस्मृतं । पीयूषाधित प्रप्री व्याख्यानविख्यातम् ।" """
     for attempt in range(max_retries):
         try:
             headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
@@ -149,7 +107,7 @@ Take corrupted OCR Sanskrit text as input → Produce a clean, readable, and gra
                 "agent_id": MISTRAL_AGENT_ID,
                 "messages": [
                     {"role": "system", "content": instructions},
-                    {"role": "user", "content": f"Clean this noisy OCR Sanskrit text: {noisy_text}"}
+                    {"role": "user", "content": f"Clean this noisy OCR Sanskrit text:\n{noisy_text}"}
                 ]
             }
             response = requests.post(MISTRAL_URL, headers=headers, json=payload, proxies={"http": "", "https": ""})
@@ -166,63 +124,99 @@ Take corrupted OCR Sanskrit text as input → Produce a clean, readable, and gra
             logger.error("Error calling Mistral Agent: %s", e)
             return f"Error: {str(e)}"
     return "Error: Max retries exceeded."
+# -------------------- CACHED LOADERS --------------------
+@st.cache_resource
+def get_easyocr_reader():
+    return easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
+@st.cache_resource
+def load_indic_model_and_tools():
+    """
+    Load ONLY the Indic→Indic model + IndicProcessor.
+    This avoids the second Indic→English model and removes tag issues entirely.
+    """
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    st.info("💪 Loading AI4Bharat IndicTrans2 (Indic→Indic) with IndicProcessor...")
+    model_name_indic = "ai4bharat/indictrans2-indic-indic-1B"
+    tokenizer_indic = AutoTokenizer.from_pretrained(
+        model_name_indic, token=HF_TOKEN, trust_remote_code=True
+    )
+    model_indic = AutoModelForSeq2SeqLM.from_pretrained(
+        model_name_indic,
+        token=HF_TOKEN,
+        trust_remote_code=True,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        low_cpu_mem_usage=True
+    ).to(DEVICE)
+    # Official pre/post processor for tags & normalization
+    ip = IndicProcessor(inference=True)
+    # English fallback translator (very light)
+    translator = GoogleTranslator(source="auto", target="en")
+    st.success(f"✅ IndicTrans2 (Indic→Indic) loaded on {DEVICE.upper()}.")
+    return tokenizer_indic, model_indic, ip, translator, DEVICE
 # -------------------- TRANSLATION --------------------
-def translate_sanskrit(cleaned_sanskrit, tokenizer_indic, model_indic, tokenizer_en, model_en, translator, DEVICE):
-    """Translate Sanskrit → Indic + English using IndicTrans2 + fallback."""
+def translate_sanskrit_indic_only(cleaned_sanskrit, tokenizer_indic, model_indic, ip, translator, DEVICE):
+    """
+    Translate Sanskrit → {Hindi, Kannada, Tamil, Telugu} using ONLY the Indic→Indic model.
+    English is produced by translating the Indic output via deep-translator (lightweight).
+    """
     try:
         src_lang = "san_Deva"
-        input_sentences = [sanitize_text_for_tags(cleaned_sanskrit)]
+        input_text = sanitize_for_processor(cleaned_sanskrit)
+       
+        # NEW: Split into verses for better handling
+        input_verses = split_sanskrit_verses(input_text)
+        st.info(f"📝 Split into {len(input_verses)} verses for accurate translation.")
+       
         translations_dict = {}
         progress_bar = st.progress(0)
         status_text = st.empty()
-        # English translation
-        status_text.text("Translating to English...")
-        tgt_lang_en = "eng_Latn"
-        batch_en = manual_preprocess_batch(input_sentences, src_lang, tgt_lang_en)
-        inputs_en = tokenizer_en(batch_en, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
-        with torch.no_grad():
-            generated_en = model_en.generate(
-                **inputs_en,
-                max_length=1024, # Reduced for speed
-                num_beams=3, # Reduced for speed (still accurate)
-                num_return_sequences=1,
-                use_cache=True # Enabled for speedup
-            )
-        english_raw = tokenizer_en.batch_decode(generated_en, skip_special_tokens=True)[0].strip()
-        english_trans = manual_postprocess_batch([english_raw], tgt_lang_en)[0] # Remove leading tag
-        if not english_trans:
+        total_steps = len(TARGET_LANGS)
+       
+        for i, tgt_lang in enumerate(TARGET_LANGS):
+            status_text.text(f"Translating Sanskrit → {LANG_NAMES[tgt_lang]}...")
+            tgt_translations = [] # Collect per-verse translations
+           
+            for verse in input_verses:
+                input_sentences = [verse] # One verse per batch
+                batch = ip.preprocess_batch(input_sentences, src_lang=src_lang, tgt_lang=tgt_lang)
+                inputs = tokenizer_indic(
+                    batch, truncation=True, padding="longest", return_tensors="pt"
+                ).to(DEVICE)
+               
+                with torch.no_grad():
+                    generated = model_indic.generate(
+                        **inputs,
+                        max_new_tokens=2048, # NEW: Focus on output length (tune if needed)
+                        num_beams=4, # NEW: Beam search for coherence (was 1)
+                        early_stopping=True, # NEW: Stop when done
+                        use_cache=False, # NEW: Enable for speed (was False)
+                        do_sample=False, # NEW: Deterministic with beams
+                        length_penalty=1.0 # NEW: Balanced length
+                    )
+               
+                decoded = tokenizer_indic.batch_decode(generated, skip_special_tokens=True)
+                trans_indic_list = ip.postprocess_batch(decoded, lang=tgt_lang)
+                verse_trans = trans_indic_list[0].strip() if trans_indic_list else ""
+                tgt_translations.append(verse_trans)
+           
+            # Join verses with newlines for readability
+            full_trans_indic = "\n".join(tgt_translations)
+           
+            # English via lightweight translator from the full Indic output
             try:
-                english_trans = translator.translate(cleaned_sanskrit)
+                english_trans = translator.translate(full_trans_indic) if full_trans_indic else translator.translate(input_text)
             except Exception:
                 english_trans = ""
-        progress_bar.progress(0.2)
-        # Indic translations
-        for i, tgt_lang in enumerate(TARGET_LANGS):
-            status_text.text(f"Translating to {LANG_NAMES[tgt_lang]}...")
-            batch = manual_preprocess_batch(input_sentences, src_lang, tgt_lang)
-            inputs = tokenizer_indic(batch, truncation=True, padding="longest", return_tensors="pt").to(DEVICE)
-            with torch.no_grad():
-                generated_tokens = model_indic.generate(
-                    **inputs,
-                    max_length=1024, # Reduced for speed
-                    num_beams=3, # Reduced for speed
-                    num_return_sequences=1,
-                    use_cache=True # Enabled for speedup
-                )
-            indic_raw = tokenizer_indic.batch_decode(generated_tokens, skip_special_tokens=True)[0].strip()
-            trans_indic = manual_postprocess_batch([indic_raw], tgt_lang)[0] # Remove leading tag
+           
             translations_dict[tgt_lang] = {
-                "indic": trans_indic,
+                "indic": full_trans_indic,
                 "english": english_trans,
-                "lang_name": LANG_NAMES[tgt_lang]
+                "lang_name": LANG_NAMES[tgt_lang],
             }
-            progress_bar.progress(0.2 + (i+1) * 0.8 / len(TARGET_LANGS))
+            progress_bar.progress((i + 1) / total_steps)
+       
         status_text.text("Translation complete!")
-        progress_bar.progress(1.0)
         return translations_dict
-    except AssertionError as e:
-        st.error(f"❌ Language tag error: {e}. Check preprocessing & tags.")
-        raise
     except Exception as e:
         st.error(f"❌ Translation failed: {e}")
         raise
@@ -247,7 +241,7 @@ if uploaded_file:
     st.subheader("🔍 Extracted OCR Text")
     with st.spinner("Initializing EasyOCR..."):
         try:
-            reader = easyocr.Reader(['hi', 'mr', 'ne'], gpu=False)
+            reader = get_easyocr_reader()
         except Exception as e:
             st.error(f"❌ EasyOCR initialization failed: {e}")
             st.stop()
@@ -268,14 +262,14 @@ if uploaded_file:
         if st.session_state.cleaned_sanskrit:
             st.subheader("📜 Cleaned Sanskrit Text")
             st.text_area("Cleaned Text", st.session_state.cleaned_sanskrit, height=200)
-            if st.button("🌐 Translate to Indic Languages + English"):
-                st.warning("⏳ Translation now faster: ~30-90s on GPU (enable in Colab Runtime > T4 GPU).")
-                with st.spinner("Loading AI4Bharat models and generating translations..."):
+            if st.button("🌐 Translate to Indic Languages + English (1 model)"):
+                st.warning("⏳ On CPU, first run may take a few minutes while the model loads (cached after).")
+                with st.spinner("Loading IndicTrans2 (Indic→Indic) and translating..."):
                     try:
-                        tokenizer_indic, model_indic, tokenizer_en, model_en, translator, DEVICE = load_translation_models()
-                        translations = translate_sanskrit(
+                        tokenizer_indic, model_indic, ip, translator, DEVICE = load_indic_model_and_tools()
+                        translations = translate_sanskrit_indic_only(
                             st.session_state.cleaned_sanskrit,
-                            tokenizer_indic, model_indic, tokenizer_en, model_en, translator, DEVICE
+                            tokenizer_indic, model_indic, ip, translator, DEVICE
                         )
                         st.session_state.translations = translations
                     except Exception as e:
@@ -286,7 +280,7 @@ if uploaded_file:
                 st.write(f"--- **{trans_dict['lang_name']}** ---")
                 st.write(f"**Sanskrit:** {st.session_state.cleaned_sanskrit}")
                 st.write(f"**{trans_dict['lang_name']}:** {trans_dict['indic']}")
-                st.write(f"**English:** {trans_dict['english']}")
+                st.write(f"**English (from {trans_dict['lang_name']}):** {trans_dict['english']}")
                 st.write("---")
     else:
         st.warning("⚠️ No text detected. Try uploading a clearer image.")
