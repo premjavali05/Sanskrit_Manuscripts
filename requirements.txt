@@ -1,13 +1,13 @@
-streamlit
-transformers>=4.45.0  # Pin to avoid old versions
-torch
-huggingface-hub
-easyocr
-opencv-python-headless
-pillow
-pillow-avif-plugin
-deep-translator
-numpy
-requests
-sentencepiece
-indictrans2  # Optional, as before
+streamlit>=1.28.0
+transformers>=4.44.0  # Ensures AutoModelForSeq2SeqLM + IndicTrans2 compat
+torch>=2.0.0
+huggingface-hub>=0.16.0
+easyocr>=1.7.0
+opencv-python-headless>=4.8.0
+pillow>=10.0.0
+pillow-avif-plugin>=1.2.0
+deep-translator>=1.11.0
+numpy>=1.24.0
+requests>=2.31.0
+sentencepiece>=0.1.99
+IndicTransToolkit>=0.1.0  # Official processor
