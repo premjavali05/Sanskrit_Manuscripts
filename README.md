@@ -150,7 +150,3 @@ The principal settings are defined in the Python script:
 - Keep `.env` out of version control.
 - Review logging before public deployment: the current code logs complete Mistral API response objects at INFO level.
 - For a production deployment, consider adding request timeouts, more user-friendly error handling, and stricter validation of uploaded image content.
-
-## License
-
-No license is specified by the application code. Add a `LICENSE` file to the repository if you intend to define the terms under which others may use, modify, or distribute this project.
